@@ -1,10 +1,14 @@
 # Decision Tracker
 
+> **Submission for [Graph Hacks: Context for AI Agents](https://www.wemakedevs.org/hackathons/falkordb)** by WeMakeDevs and FalkorDB, Oct 15 to 18, 2026. Track: **Company Brain**.
+
 **Ask why a decision was made, and see the path the agent followed to answer.**
 
 Decision Tracker is an agent that reads a company's documents (ADRs, postmortems, meeting notes, ownership lists), builds a knowledge graph of people, teams, systems, decisions and incidents in **FalkorDB**, and answers questions by walking that graph. Every answer comes with the path behind it.
 
-Built for **Graph Hacks: Context for AI Agents**, Track 3 (Company Brain).
+Built for **Graph Hacks: Context for AI Agents**.
+
+**Track entered: Company Brain (Track 3).**
 
 ## The problem
 
@@ -70,6 +74,62 @@ Each tool records the relationships it followed. The API returns the answer toge
 
 "Outdated" is not stored anywhere. It is derived from the graph: a decision is outdated if another decision `SUPERSEDES` it.
 
+## Cypher the product depends on
+
+FalkorDB is the only data store. If it is removed, nothing works: there is no other place the graph, the chunks or the vector search live.
+
+**Vector index and chunk search** (`ChunkStoreService`)
+
+```cypher
+CREATE VECTOR INDEX FOR (c:Chunk) ON (c.embedding) OPTIONS {dimension:3072, similarityFunction:'cosine'}
+
+MERGE (c:Chunk {id:$id}) SET c.text=$text, c.source=$source, c.embedding=vecf32($embedding)
+
+CALL db.idx.vector.queryNodes('Chunk', 'embedding', 5, vecf32($vector)) YIELD node, score
+RETURN node.id AS id, node.text AS text, node.source AS source, score
+```
+
+Score is a cosine distance (lower is closer); results above 0.40 are dropped.
+
+**Building the graph from an extraction** (`GraphWriter`). Labels and relationship types are checked against a whitelist in code before being placed in the query.
+
+```cypher
+MERGE (n:<Label> {key:$key}) SET n.name=$name
+MATCH (n:<Label> {key:$key}), (d:Document {name:$doc}) MERGE (n)-[:MENTIONED_IN]->(d)
+MATCH (a:<FromLabel> {key:$from}), (b:<ToLabel> {key:$to}) MERGE (a)-[:<REL>]->(b)
+MATCH (c:Chunk {source:$s}), (d:Document {name:$s}) MERGE (c)-[:PART_OF]->(d)
+```
+
+**Agent tools** (`GraphTools`)
+
+```cypher
+// traceDecision: why was it decided, by whom, what does it affect
+MATCH (d:Decision) WHERE toLower(d.name) CONTAINS $topic
+OPTIONAL MATCH (i:Incident)-[:TRIGGERED]->(d)
+OPTIONAL MATCH (p:Person)-[:DECIDED]->(d)
+OPTIONAL MATCH (d)-[:AFFECTS]->(s:System)
+OPTIONAL MATCH (d)-[:MENTIONED_IN]->(doc:Document)
+RETURN d.name AS decision, collect(DISTINCT i.name) AS triggers, collect(DISTINCT p.name) AS decidedBy,
+       collect(DISTINCT s.name) AS affects, collect(DISTINCT doc.name) AS docs
+
+// decisionsAffecting: decisions on a system, and whether they were superseded
+MATCH (d:Decision)-[:AFFECTS]->(s:System) WHERE toLower(s.name) CONTAINS $system
+OPTIONAL MATCH (newer:Decision)-[:SUPERSEDES]->(d)
+OPTIONAL MATCH (d)-[:SUPERSEDES]->(older:Decision)
+OPTIONAL MATCH (p:Person)-[:DECIDED]->(d)
+RETURN d.name AS decision, collect(DISTINCT p.name) AS decidedBy,
+       collect(DISTINCT newer.name) AS supersededBy, collect(DISTINCT older.name) AS supersedes
+
+// whoKnowsAbout: owners, members, reviewers and decision makers for a system
+MATCH (s:System) WHERE toLower(s.name) CONTAINS $system
+OPTIONAL MATCH (t:Team)-[:OWNS]->(s)
+OPTIONAL MATCH (m:Person)-[:MEMBER_OF]->(t)
+OPTIONAL MATCH (r:Team)-[:REVIEWS]->(s)
+OPTIONAL MATCH (p:Person)-[:DECIDED]->(:Decision)-[:AFFECTS]->(s)
+RETURN s.name AS system, collect(DISTINCT t.name) AS ownedBy, collect(DISTINCT m.name) AS members,
+       collect(DISTINCT r.name) AS reviewedBy, collect(DISTINCT p.name) AS decisionMakers
+```
+
 ## Demo
 
 Sample documents for a fictional company, **Northwind Pay**, are in `sample-docs/`.
@@ -91,7 +151,7 @@ Sample documents for a fictional company, **Northwind Pay**, are in `sample-docs
 
 ```bash
 # 1. Start FalkorDB (database on 6379, browser UI on 3000)
-docker compose up -d
+docker compose up -d   # use REDIS_ARGS: "--appendonly yes" in docker-compose.yml so data survives restarts
 
 # 2. Start the backend (set your Gemini API key as configured in application.properties)
 ./mvnw spring-boot:run
@@ -118,6 +178,10 @@ src/main/java/com/ai/decision_tracker
 frontend/       React chat UI with the path display
 sample-docs/    five Northwind Pay documents
 ```
+
+## AI assistance disclosure
+
+An AI assistant (Claude) was used during development for explaining concepts, suggesting designs and drafting code, which I then reviewed, ran, debugged and adapted. The graph schema, the extraction rules, the choice of tools and the prompt fixes (for example excluding action items from decisions, and showing existing names to the model so one incident keeps one name) came out of testing against the sample documents. The sample data is synthetic.
 
 ## Notes and limitations
 
