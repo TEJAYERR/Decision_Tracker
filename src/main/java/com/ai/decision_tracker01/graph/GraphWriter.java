@@ -1,7 +1,7 @@
 package com.ai.decision_tracker01.graph;
 
-import com.ai.decision_tracker.extraction.Extraction;
-import com.ai.decision_tracker.extraction.GraphSchema;
+import com.ai.decision_tracker01.extraction.Extraction;
+import com.ai.decision_tracker01.extraction.GraphSchema;
 import com.falkordb.Record;
 import com.falkordb.ResultSet;
 import org.slf4j.Logger;
