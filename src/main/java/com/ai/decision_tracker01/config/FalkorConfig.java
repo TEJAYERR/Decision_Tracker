@@ -10,6 +10,7 @@ public class FalkorConfig {
 
     @Bean
     public Driver falkorDriver() {
+
         return FalkorDB.driver(); // connects to localhost:6379 by default
     }
 }
